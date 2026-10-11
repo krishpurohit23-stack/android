@@ -1,3 +1,4 @@
+// ANDROID_LITE_BUILD=5
 import SwiftUI
 import AVFoundation
 import WebKit
@@ -610,6 +611,9 @@ struct Home: View {
                 Text(fmtDate("EEEE, MMM d"))
                     .font(.system(size: 17, weight: .medium))
                     .foregroundColor(.white)
+                Text("build 5")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.35))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 28)
@@ -1409,7 +1413,7 @@ struct SettingsApp: View {
                     BrightBar(v: $os.brightness).padding(.horizontal, 14).padding(.vertical, 8)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("About phone").foregroundColor(.white)
-                        Text("Android Lite · Android 16 style · Build 2.0")
+                        Text("Android Lite · Android 16 style · Build 5")
                             .font(.system(size: 13)).foregroundColor(.white.opacity(0.6))
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
