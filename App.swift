@@ -104,6 +104,8 @@ final class OS: ObservableObject {
     @Published var top: CGFloat = 47
     @Published var bottom: CGFloat = 34
     lazy var browser = WebModel()
+    var origin: CGPoint? = nil
+    var backHandlers: [String: () -> Bool] = [:]
 
     init() {
         notifs = [Notif(appId: "msg", title: "Pixel Team", body: "Welcome to Android Lite 16 ✨", date: Date())]
@@ -134,8 +136,22 @@ final class OS: ObservableObject {
         withAnimation(.easeOut(duration: 0.25)) { panel = .none }
     }
 
-    func launch(_ a: AppInfo) {
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+    func goBack() {
+        if panel != .none { closePanel(); return }
+        if showRecents { home(); return }
+        if drawer {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.88)) { drawer = false }
+            return
+        }
+        if let a = open {
+            if let h = backHandlers[a.id], h() { return }
+            home()
+        }
+    }
+
+    func launch(_ a: AppInfo, from p: CGPoint? = nil) {
+        origin = p
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
             recents.removeAll { $0.id == a.id }
             recents.insert(a, at: 0)
             open = a
@@ -146,7 +162,7 @@ final class OS: ObservableObject {
     }
 
     func home() {
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
             open = nil
             showRecents = false
             drawer = false
@@ -155,26 +171,67 @@ final class OS: ObservableObject {
     }
 }
 
-// MARK: - Entry
-@main
-struct AndroidLiteApp: App {
-    init() {
-        UITextView.appearance().backgroundColor = .clear
+// MARK: - Entry (UIKit host: hides home indicator, defers edge gestures)
+final class HostVC: UIHostingController<AnyView> {
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    override var prefersStatusBarHidden: Bool { true }
+    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
+}
+
+final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        guard let ws = scene as? UIWindowScene else { return }
+        let w = UIWindow(windowScene: ws)
+        let vc = HostVC(rootView: AnyView(PhoneView().preferredColorScheme(.dark)))
+        vc.view.backgroundColor = .black
+        w.rootViewController = vc
+        w.makeKeyAndVisible()
+        window = w
     }
-    var body: some Scene {
-        WindowGroup {
-            PhoneView()
-                .preferredColorScheme(.dark)
-                .statusBarHidden(true)
-                .persistentSystemOverlays(.hidden)
-                .defersSystemGestures(on: .all)
-        }
+}
+
+@main
+final class AppDelegate: UIResponder, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UITextView.appearance().backgroundColor = .clear
+        return true
+    }
+
+    func application(_ application: UIApplication,
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let c = UISceneConfiguration(name: "Default", sessionRole: connectingSceneSession.role)
+        c.delegateClass = SceneDelegate.self
+        return c
     }
 }
 
 // MARK: - Root
+struct OpenFX: ViewModifier {
+    let scale: CGFloat
+    let opacity: Double
+    let anchor: UnitPoint
+    let radius: CGFloat
+    func body(content: Content) -> some View {
+        content
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .scaleEffect(scale, anchor: anchor)
+            .opacity(opacity)
+    }
+}
+
 struct PhoneView: View {
     @StateObject var os = OS()
+    @State var backDrag: CGFloat = 0
+    @State var backFromLeft = true
+
+    func anchor() -> UnitPoint {
+        let s = UIScreen.main.bounds.size
+        guard let o = os.origin, s.width > 0, s.height > 0 else { return .center }
+        return UnitPoint(x: o.x / s.width, y: o.y / s.height)
+    }
 
     var body: some View {
         GeometryReader { g in
@@ -182,15 +239,18 @@ struct PhoneView: View {
                 Wallpaper().ignoresSafeArea()
                 if let a = os.open {
                     AppWindow(app: a)
-                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                        .transition(.modifier(
+                            active: OpenFX(scale: 0.12, opacity: 0, anchor: anchor(), radius: 220),
+                            identity: OpenFX(scale: 1, opacity: 1, anchor: anchor(), radius: 0)))
+                        .zIndex(1)
                 } else {
-                    Home().transition(.opacity)
+                    Home().transition(.opacity).zIndex(0)
                 }
                 if os.drawer && os.open == nil {
-                    Drawer().transition(.move(edge: .bottom))
+                    Drawer().transition(.move(edge: .bottom)).zIndex(2)
                 }
                 if os.showRecents {
-                    Recents().transition(.opacity)
+                    Recents().transition(.opacity).zIndex(3)
                 }
                 VStack(spacing: 0) {
                     StatusBar()
@@ -199,9 +259,26 @@ struct PhoneView: View {
                     }
                     Spacer()
                 }
+                .zIndex(4)
                 VStack {
                     Spacer()
                     NavZone()
+                }
+                .zIndex(4)
+                if backDrag > 4 {
+                    HStack {
+                        if !backFromLeft { Spacer() }
+                        Image(systemName: backFromLeft ? "chevron.left" : "chevron.right")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(T.onAccent)
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(T.accent.opacity(min(1, Double(backDrag) / 70))))
+                            .offset(x: (backFromLeft ? 1 : -1) * min(backDrag, 90) * 0.45)
+                        if backFromLeft { Spacer() }
+                    }
+                    .padding(.horizontal, 6)
+                    .allowsHitTesting(false)
+                    .zIndex(6)
                 }
                 if os.panel != .none {
                     Shade()
@@ -210,6 +287,28 @@ struct PhoneView: View {
                 }
             }
             .ignoresSafeArea(.container)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 12)
+                    .onChanged { v in
+                        let w = g.size.width
+                        if v.startLocation.x < 26 {
+                            backFromLeft = true
+                            backDrag = max(0, v.translation.width)
+                        } else if v.startLocation.x > w - 26 {
+                            backFromLeft = false
+                            backDrag = max(0, -v.translation.width)
+                        }
+                    }
+                    .onEnded { v in
+                        let w = g.size.width
+                        let fromLeft = v.startLocation.x < 26
+                        let fromRight = v.startLocation.x > w - 26
+                        if (fromLeft && v.translation.width > 70) || (fromRight && v.translation.width < -70) {
+                            os.goBack()
+                        }
+                        withAnimation(.easeOut(duration: 0.2)) { backDrag = 0 }
+                    }
+            )
             .onAppear {
                 os.top = g.safeAreaInsets.top
                 os.bottom = g.safeAreaInsets.bottom
@@ -337,12 +436,22 @@ struct NavZone: View {
 }
 
 // MARK: - Home
+struct FramePref: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+
 struct Icon: View {
     @EnvironmentObject var os: OS
     let app: AppInfo
     var label = true
+    @State var frame: CGRect = .zero
+
     var body: some View {
-        Button { os.launch(app) } label: {
+        Button {
+            let p: CGPoint? = frame == .zero ? nil : CGPoint(x: frame.midX, y: frame.midY)
+            os.launch(app, from: p)
+        } label: {
             VStack(spacing: 6) {
                 Image(systemName: app.icon)
                     .font(.system(size: 24, weight: .medium))
@@ -359,6 +468,10 @@ struct Icon: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
+        .background(GeometryReader { gp in
+            Color.clear.preference(key: FramePref.self, value: gp.frame(in: .global))
+        })
+        .onPreferenceChange(FramePref.self) { frame = $0 }
     }
 }
 
@@ -377,10 +490,21 @@ struct StackClock: View {
 
 struct Home: View {
     @EnvironmentObject var os: OS
+    @State var q = ""
+    @FocusState var focus: Bool
     let cols = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
 
     func openDrawer() {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.88)) { os.drawer = true }
+    }
+
+    func search() {
+        let t = q.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return }
+        os.browser.go(t)
+        q = ""
+        focus = false
+        if let w = appFor("web") { os.launch(w) }
     }
 
     var body: some View {
@@ -404,26 +528,37 @@ struct Home: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 14)
-            Button { openDrawer() } label: {
-                HStack(spacing: 12) {
-                    Text("G").font(.system(size: 20, weight: .bold)).foregroundColor(T.accent)
-                    Text("Search").foregroundColor(.white.opacity(0.7))
-                    Spacer()
-                    Image(systemName: "mic.fill").foregroundColor(.white.opacity(0.8))
-                    Image(systemName: "camera.viewfinder").foregroundColor(.white.opacity(0.8))
-                }
-                .padding(.horizontal, 20)
-                .frame(height: 52)
-                .background(Capsule().fill(T.card.opacity(0.95)))
-                .padding(.horizontal, 16)
+            HStack(spacing: 12) {
+                Text("G").font(.system(size: 20, weight: .bold)).foregroundColor(T.accent)
+                TextField("Search", text: $q)
+                    .focused($focus)
+                    .foregroundColor(.white)
+                    .textInputAutocapitalization(.never)
+                    .disableAutocorrection(true)
+                    .keyboardType(.webSearch)
+                    .submitLabel(.search)
+                    .onSubmit { search() }
+                Image(systemName: "mic.fill").foregroundColor(.white.opacity(0.8))
+                Image(systemName: "camera.viewfinder").foregroundColor(.white.opacity(0.8))
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 20)
+            .frame(height: 52)
+            .background(Capsule().fill(T.card.opacity(0.95)))
+            .padding(.horizontal, 16)
             Spacer().frame(height: 50)
         }
         .padding(.top, os.padTop)
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 30).onEnded { v in
-            if v.translation.height < -60 { openDrawer() }
+            let h = v.translation.height
+            if abs(v.translation.width) > abs(h) { return }
+            if h < -60 {
+                focus = false
+                openDrawer()
+            } else if h > 60 {
+                focus = false
+                withAnimation(.easeOut(duration: 0.25)) { os.panel = .notif }
+            }
         })
     }
 }
@@ -455,6 +590,16 @@ struct Drawer: View {
                 TextField("Search apps", text: $q)
                     .foregroundColor(.white)
                     .disableAutocorrection(true)
+                    .submitLabel(.search)
+                    .onSubmit {
+                        let t = q.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if let f = list.first {
+                            os.launch(f)
+                        } else if !t.isEmpty {
+                            os.browser.go(t)
+                            if let w = appFor("web") { os.launch(w) }
+                        }
+                    }
             }
             .padding(.horizontal, 18)
             .frame(height: 52)
@@ -742,8 +887,12 @@ struct Shade: View {
                     .fill(T.bg)
                     .ignoresSafeArea(edges: .top)
             )
-            .gesture(DragGesture().onEnded { v in
-                if v.translation.height < -40 { os.closePanel() }
+            .simultaneousGesture(DragGesture().onEnded { v in
+                if v.translation.height < -40 {
+                    os.closePanel()
+                } else if v.translation.height > 50 && os.panel == .notif && v.startLocation.y < 260 {
+                    withAnimation(.easeOut(duration: 0.25)) { os.panel = .qs }
+                }
             })
         }
     }
@@ -1252,6 +1401,15 @@ struct MessagesApp: View {
     @State var chat: Contact? = nil
 
     var body: some View {
+        inner.onAppear {
+            os.backHandlers["msg"] = {
+                if chat != nil { chat = nil; return true }
+                return false
+            }
+        }
+    }
+
+    @ViewBuilder var inner: some View {
         if let c = chat {
             ChatView(contact: c) { chat = nil }
         } else {
@@ -1594,6 +1752,7 @@ struct Thumb: View {
 }
 
 struct PhotosApp: View {
+    @EnvironmentObject var os: OS
     @State var files: [URL] = []
     @State var sel: URL? = nil
     let cols = Array(repeating: GridItem(.flexible(), spacing: 3), count: 3)
@@ -1648,7 +1807,13 @@ struct PhotosApp: View {
                 }
             }
         }
-        .onAppear { files = Gallery.list() }
+        .onAppear {
+            files = Gallery.list()
+            os.backHandlers["photos"] = {
+                if sel != nil { sel = nil; return true }
+                return false
+            }
+        }
     }
 }
 
@@ -1667,7 +1832,7 @@ final class WebModel: ObservableObject {
         let cfg = WKWebViewConfiguration()
         cfg.allowsInlineMediaPlayback = true
         web = WKWebView(frame: .zero, configuration: cfg)
-        web.allowsBackForwardNavigationGestures = true
+        web.allowsBackForwardNavigationGestures = false
         obs = [
             web.observe(\.estimatedProgress) { [weak self] w, _ in
                 DispatchQueue.main.async { self?.progress = w.estimatedProgress }
@@ -1711,7 +1876,15 @@ struct WebHost: UIViewRepresentable {
 
 struct BrowserApp: View {
     @EnvironmentObject var os: OS
-    var body: some View { BrowserBody(m: os.browser) }
+    var body: some View {
+        BrowserBody(m: os.browser).onAppear {
+            let m = os.browser
+            os.backHandlers["web"] = {
+                if m.canBack { m.web.goBack(); return true }
+                return false
+            }
+        }
+    }
 }
 
 struct BrowserBody: View {
