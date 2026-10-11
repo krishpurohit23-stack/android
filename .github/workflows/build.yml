@@ -1,4 +1,4 @@
-name: Build IPA
+pname: Build IPA
 
 on:
   workflow_dispatch:
@@ -14,6 +14,24 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Find newest App.swift
+        run: |
+          mkdir -p Sources
+          BEST=0
+          F=""
+          while IFS= read -r f; do
+            n=$(grep -o "ANDROID_LITE_BUILD=[0-9]*" "$f" | head -1 | cut -d= -f2)
+            if [ -n "$n" ] && [ "$n" -gt "$BEST" ]; then BEST=$n; F="$f"; fi
+          done < <(find . -iname "*.swift" -not -path "./Sources/*" -not -path "./.git/*")
+          if [ -z "$F" ]; then
+            echo "ERROR: no Swift file with the ANDROID_LITE_BUILD marker found."
+            echo "Your repo still has an OLD App.swift. Swift files present:"
+            find . -iname "*.swift" -not -path "./.git/*"
+            exit 1
+          fi
+          echo "Building Android Lite build $BEST from $F"
+          cp "$F" Sources/App.swift
+
       - name: Generate Xcode project
         run: |
           cat > project.yml << 'EOF'
@@ -26,7 +44,7 @@ jobs:
               platform: iOS
               deploymentTarget: "16.0"
               sources:
-                - App.swift
+                - Sources
               settings:
                 base:
                   PRODUCT_BUNDLE_IDENTIFIER: com.androidlite.app
